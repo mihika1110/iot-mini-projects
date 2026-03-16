@@ -1,0 +1,59 @@
+use crate::sensor::SensorData;
+use crate::agent::AgentStore;
+use rumqttc::{AsyncClient, MqttOptions, QoS, Event, Packet};
+use std::time::Duration;
+use tokio::time;
+
+mod agent;
+mod sensor;
+mod comm;
+
+#[tokio::main]
+async fn main() {
+    let mut agent_store = AgentStore::new(None); // create store with default sanitize duration
+    let mut mqttoptions = MqttOptions::new("rust-subscriber", "192.168.50.100", 1883);
+    mqttoptions.set_keep_alive(Duration::from_secs(5));
+
+    let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
+    
+    // Subscribe to all sensor topics (s-001/send, s-002/send, etc.)
+    client
+        .subscribe("+/send", QoS::AtMostOnce)
+        .await
+        .expect("Failed to subscribe");
+
+    println!("MQTT Subscriber started. Listening for sensor data...");
+
+    loop {
+        match eventloop.poll().await {
+            Ok(Event::Incoming(Packet::Publish(publish))) => {
+                let topic = publish.topic;
+                let payload = publish.payload;
+                
+                match serde_json::from_slice::<SensorData>(&payload) {
+                    Ok(data) => {
+                        println!(
+                            "[{}] Movement: {} | Distance: {:.2} mm | Timestamp: {}ms",
+                            topic,
+                            if data.movement == 1 { "DETECTED" } else { "None" },
+                            data.distance,
+                            data.timestamp
+                        );
+                        agent_store.update_agent(topic.as_str(), Some(data));
+                    }
+                    Err(e) => {
+                        agent_store.update_agent(topic.as_str(), None);
+                        eprintln!("[{}] Failed to parse JSON: {} | Raw: {:?}", topic, e, payload);
+                    }
+                }
+            }
+            Ok(_) => {} // Ignore other events
+            Err(e) => {
+                eprintln!("MQTT Connection Error: {:?}", e);
+                time::sleep(Duration::from_secs(5)).await;
+            }
+        }
+
+        agent_store.update_expiration();
+    }
+}

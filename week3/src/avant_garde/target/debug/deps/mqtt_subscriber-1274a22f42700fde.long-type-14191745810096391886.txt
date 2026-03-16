@@ -1,0 +1,1 @@
+std::iter::Map<std::collections::vec_deque::Iter<'_, SensorData>, {closure@src/agent.rs:86:22: 86:27}>
