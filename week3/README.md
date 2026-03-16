@@ -1,4 +1,5 @@
 # IoT Multi-Node Object Localization System
+[AI Generated Markdown based on the Code, take it with a grain of salt]
 
 > **Week 3 Mini-Project** — Passive-Infrared + Ultrasonic Sensor Fusion over MQTT with a Rust Terminal Dashboard
 
