@@ -15,9 +15,9 @@ pub struct Comm {
 impl Comm {
     pub fn new(name: String, address: String, port: u16) -> Self {
         Comm {
-            name: name,
-            address: address,
-            port: port,
+            name,
+            address,
+            port,
         }
     }
 

@@ -1,0 +1,21 @@
+[package]
+name = "whyblued"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "WhyBlue daemon - dual-transport networking service"
+
+[[bin]]
+name = "whyblued"
+path = "src/main.rs"
+
+[dependencies]
+whyblue-core = { path = "../whyblue-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"

@@ -81,7 +81,7 @@ impl AgentStore {
             return self.sanitize();
         }
 
-        return 0;
+        0
     }
 
     // Update the store for new agent activity
@@ -113,7 +113,7 @@ impl AgentStore {
             }
         }
 
-        return self.store.len();
+        self.store.len()
     }
 
     // method to set the position of the agent,
@@ -166,11 +166,8 @@ impl AgentStore {
         // build a set of ids of expired agents
         let mut expired_agents: HashSet<String> = HashSet::new();
         self.store.iter().for_each(|(key, value)| {
-            match value.state {
-                AgentState::EXPIRED => {
-                    let _ = expired_agents.insert(String::from(key));
-                }
-                _ => {}
+            if value.state == AgentState::EXPIRED {
+                let _ = expired_agents.insert(String::from(key));
             };
         });
 
@@ -179,7 +176,7 @@ impl AgentStore {
             self.store.remove(agent_id);
         });
 
-        return count_expired_agents; // return the number of agents removed
+        count_expired_agents// return the number of agents removed
                                      // from the store
     }
 }
