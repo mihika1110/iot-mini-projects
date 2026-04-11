@@ -1,6 +1,0 @@
-{
-  "model_path": "soil_model.pkl",
-  "scaler_path": "scaler.pkl",
-  "sensor_csv_path": "soil_data.csv",
-  "soil_dataset_path": "soil_dataset_final.csv"
-}
