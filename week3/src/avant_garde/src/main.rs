@@ -14,7 +14,7 @@ mod localizer;
 async fn main() -> Result<(), std::io::Error> {
     let agent_store = Arc::new(Mutex::new(AgentStore::new(None))); // create store with default sanitize duration
     const NAME: &str = "rust-client";
-    const ADDRESS: &str = "192.168.50.100";
+    const ADDRESS: &str = "10.178.199.211";
     const PORT: u16 = 1883;
 
     let comm = Comm::new(String::from(NAME), String::from(ADDRESS), PORT);

@@ -14,7 +14,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use crate::agent::{AgentStore, AgentState, AgentInfo, Coordinate};
 use crate::logger::Logger;
-use crate::localizer::{LocalizationResult, WeightedEstimate, localize_windowed, WindowNode};
+use crate::localizer::LocalizationResult;
 
 #[derive(PartialEq)]
 enum InputMode {
@@ -95,8 +95,8 @@ pub async fn run(store: Arc<Mutex<AgentStore>>) -> std::io::Result<()> {
 
         terminal.draw(|f| ui(f, &mut app, &agents, &distances, &activations, &logs, &loc_estimates))?;
 
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()? {
                 match app.input_mode {
                     InputMode::Normal => match key.code {
                         KeyCode::Char('q') => break,
@@ -169,7 +169,6 @@ pub async fn run(store: Arc<Mutex<AgentStore>>) -> std::io::Result<()> {
                     },
                 }
             }
-        }
     }
     ratatui::restore();
     Ok(())
