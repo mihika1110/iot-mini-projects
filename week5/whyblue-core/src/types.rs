@@ -187,6 +187,7 @@ pub struct Decision {
 pub enum HandoverMsg {
     Hello { session_id: u32 },
     HelloAck { session_id: u32 },
+    SwitchRequest { generation: u32, new_transport: WbTransport },
     SwitchPrepare { generation: u32, new_transport: WbTransport },
     SwitchAck { generation: u32 },
     PrimaryOn { generation: u32 },

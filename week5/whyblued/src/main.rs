@@ -138,6 +138,8 @@ async fn main() -> Result<()> {
     let wifi_transport = Arc::new(wifi_transport);
     let bt_transport = Arc::new(bt_transport);
 
+    let role = config.role.clone();
+    
     // ── Setup Session Engine ──
     let mut session_engine = SessionEngine::new(state.clone());
     let tx_queue = session_engine.sender();
@@ -147,6 +149,9 @@ async fn main() -> Result<()> {
         let wifi_rx = wifi_transport.clone();
         let state_rx = state.clone();
         let shutdown_rx = shutdown.clone();
+        let role_rx = role.clone();
+        let wifi_tx = wifi_transport.clone();
+        let bt_tx = bt_transport.clone();
         tokio::spawn(async move {
             let mut buf = vec![0u8; 65535];
             loop {
@@ -156,7 +161,64 @@ async fn main() -> Result<()> {
                         if let Ok(n) = res {
                             state_rx.add_rx_bytes(n as u64).await;
                             if let Ok((header, payload)) = whyblue_core::protocol::decode_frame(&buf[..n]) {
-                                if whyblue_core::protocol::u8_to_traffic_class(header.traffic_class) == TrafficClass::Interactive { // Interactive
+                                // Handle handover control frames from peer
+                                if header.flags & whyblue_core::protocol::FLAG_HANDOVER != 0 {
+                                    if let Ok(handover_msg) = HandoverMsg::decode(payload) {
+                                        match handover_msg {
+                                            HandoverMsg::SwitchPrepare { generation: _, new_transport } => {
+                                                tracing::info!(transport = %new_transport, "Peer requested transport switch (via Wi-Fi)");
+                                                state_rx.set_peer_initiated_switch(true).await;
+                                                state_rx.set_active(new_transport).await;
+                                                let new_state = match new_transport {
+                                                    WbTransport::Bluetooth => WbState::BtOnly,
+                                                    WbTransport::Wifi => WbState::WifiOnly,
+                                                    WbTransport::None => WbState::Discovering,
+                                                };
+                                                state_rx.transition(new_state, &format!("Peer-initiated switch to {new_transport}")).await;
+                                            }
+                                            HandoverMsg::SwitchRequest { generation: _, new_transport } => {
+                                                if role_rx == "server" {
+                                                    tracing::info!(transport = %new_transport, "Client requested transport switch");
+                                                    let is_valid = match new_transport {
+                                                        WbTransport::Wifi => wifi_tx.is_alive(),
+                                                        WbTransport::Bluetooth => bt_tx.is_alive(),
+                                                        WbTransport::None => true,
+                                                    };
+                                                    if is_valid {
+                                                        tracing::info!("Server accepting and executing client's SwitchRequest!");
+                                                        state_rx.set_active(new_transport).await;
+                                                        let new_state = match new_transport {
+                                                            WbTransport::Bluetooth => WbState::BtOnly,
+                                                            WbTransport::Wifi => WbState::WifiOnly,
+                                                            WbTransport::None => WbState::Discovering,
+                                                        };
+                                                        state_rx.transition(new_state, &format!("Executing Client Request to {new_transport}")).await;
+
+                                                        let handover_msg = HandoverMsg::SwitchPrepare {
+                                                            generation: state_rx.generation().await,
+                                                            new_transport,
+                                                        };
+                                                        let payload = handover_msg.encode();
+                                                        let header = whyblue_core::protocol::WbHeader::new(
+                                                            state_rx.session_id().await,
+                                                            0,
+                                                            whyblue_core::types::TrafficClass::Control,
+                                                            WbTransport::None,
+                                                            payload.len() as u16,
+                                                            whyblue_core::protocol::FLAG_CONTROL | whyblue_core::protocol::FLAG_HANDOVER,
+                                                        );
+                                                        let frame = whyblue_core::protocol::encode_frame(&header, &payload);
+                                                        if wifi_tx.is_alive() { let _ = wifi_tx.send(&frame).await; }
+                                                        if bt_tx.is_alive() { let _ = bt_tx.send(&frame).await; }
+                                                    } else {
+                                                        tracing::warn!("Server ignoring client SwitchRequest because requested transport goes dead");
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                } else if whyblue_core::protocol::u8_to_traffic_class(header.traffic_class) == TrafficClass::Interactive {
                                     let msg = String::from_utf8_lossy(payload).to_string();
                                     state_rx.push_chat_message("Peer".into(), msg).await;
                                 }
@@ -172,6 +234,9 @@ async fn main() -> Result<()> {
         let bt_rx = bt_transport.clone();
         let state_rx = state.clone();
         let shutdown_rx = shutdown.clone();
+        let role_rx = role.clone();
+        let wifi_tx = wifi_transport.clone();
+        let bt_tx = bt_transport.clone();
         tokio::spawn(async move {
             let mut buf = vec![0u8; 65535];
             loop {
@@ -181,7 +246,64 @@ async fn main() -> Result<()> {
                         if let Ok(n) = res {
                             state_rx.add_rx_bytes(n as u64).await;
                             if let Ok((header, payload)) = whyblue_core::protocol::decode_frame(&buf[..n]) {
-                                if whyblue_core::protocol::u8_to_traffic_class(header.traffic_class) == TrafficClass::Interactive { // Interactive
+                                // Handle handover control frames from peer
+                                if header.flags & whyblue_core::protocol::FLAG_HANDOVER != 0 {
+                                    if let Ok(handover_msg) = HandoverMsg::decode(payload) {
+                                        match handover_msg {
+                                            HandoverMsg::SwitchPrepare { generation: _, new_transport } => {
+                                                tracing::info!(transport = %new_transport, "Peer requested transport switch (via BT)");
+                                                state_rx.set_peer_initiated_switch(true).await;
+                                                state_rx.set_active(new_transport).await;
+                                                let new_state = match new_transport {
+                                                    WbTransport::Bluetooth => WbState::BtOnly,
+                                                    WbTransport::Wifi => WbState::WifiOnly,
+                                                    WbTransport::None => WbState::Discovering,
+                                                };
+                                                state_rx.transition(new_state, &format!("Peer-initiated switch to {new_transport}")).await;
+                                            }
+                                            HandoverMsg::SwitchRequest { generation: _, new_transport } => {
+                                                if role_rx == "server" {
+                                                    tracing::info!(transport = %new_transport, "Client requested transport switch");
+                                                    let is_valid = match new_transport {
+                                                        WbTransport::Wifi => wifi_tx.is_alive(),
+                                                        WbTransport::Bluetooth => bt_tx.is_alive(),
+                                                        WbTransport::None => true,
+                                                    };
+                                                    if is_valid {
+                                                        tracing::info!("Server accepting and executing client's SwitchRequest!");
+                                                        state_rx.set_active(new_transport).await;
+                                                        let new_state = match new_transport {
+                                                            WbTransport::Bluetooth => WbState::BtOnly,
+                                                            WbTransport::Wifi => WbState::WifiOnly,
+                                                            WbTransport::None => WbState::Discovering,
+                                                        };
+                                                        state_rx.transition(new_state, &format!("Executing Client Request to {new_transport}")).await;
+
+                                                        let handover_msg = HandoverMsg::SwitchPrepare {
+                                                            generation: state_rx.generation().await,
+                                                            new_transport,
+                                                        };
+                                                        let payload = handover_msg.encode();
+                                                        let header = whyblue_core::protocol::WbHeader::new(
+                                                            state_rx.session_id().await,
+                                                            0,
+                                                            whyblue_core::types::TrafficClass::Control,
+                                                            WbTransport::None,
+                                                            payload.len() as u16,
+                                                            whyblue_core::protocol::FLAG_CONTROL | whyblue_core::protocol::FLAG_HANDOVER,
+                                                        );
+                                                        let frame = whyblue_core::protocol::encode_frame(&header, &payload);
+                                                        if wifi_tx.is_alive() { let _ = wifi_tx.send(&frame).await; }
+                                                        if bt_tx.is_alive() { let _ = bt_tx.send(&frame).await; }
+                                                    } else {
+                                                        tracing::warn!("Server ignoring client SwitchRequest because requested transport goes dead");
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                } else if whyblue_core::protocol::u8_to_traffic_class(header.traffic_class) == TrafficClass::Interactive {
                                     let msg = String::from_utf8_lossy(payload).to_string();
                                     state_rx.push_chat_message("Peer".into(), msg).await;
                                 }
@@ -290,13 +412,15 @@ async fn main() -> Result<()> {
     };
 
     // ── Spawn FSM evaluation task ──
-    let _fsm_handle = {
+    let _fsm_handle = if role == "server" {
         let state = state.clone();
         let metrics = metrics.clone();
         let config = config.clone();
         let shutdown = shutdown.clone();
+        let wifi_transport = wifi_transport.clone();
+        let bt_transport = bt_transport.clone();
 
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(100));
 
             loop {
@@ -334,13 +458,41 @@ async fn main() -> Result<()> {
                             && decision.preferred_primary != snap.active_transport
                         {
                             state.set_active(decision.preferred_primary).await;
+
+                            // Only notify peer if this wasn't a peer-initiated change (prevent echo)
+                            if !state.is_peer_initiated_switch().await {
+                                let handover_msg = HandoverMsg::SwitchPrepare {
+                                    generation: state.generation().await,
+                                    new_transport: decision.preferred_primary,
+                                };
+                                let handover_payload = handover_msg.encode();
+                                let header = whyblue_core::protocol::WbHeader::new(
+                                    state.session_id().await,
+                                    0,
+                                    TrafficClass::Control,
+                                    WbTransport::None,
+                                    handover_payload.len() as u16,
+                                    whyblue_core::protocol::FLAG_CONTROL | whyblue_core::protocol::FLAG_HANDOVER,
+                                );
+                                let frame = whyblue_core::protocol::encode_frame(&header, &handover_payload);
+                                if wifi_transport.is_alive() { let _ = wifi_transport.send(&frame).await; }
+                                if bt_transport.is_alive() { let _ = bt_transport.send(&frame).await; }
+                                tracing::info!(transport = %decision.preferred_primary, "FSM-driven switch, notified peer");
+                            } else {
+                                // Clear the peer-initiated flag so future local FSM decisions can notify
+                                state.set_peer_initiated_switch(false).await;
+                                tracing::info!(transport = %decision.preferred_primary, "FSM-driven switch (peer-initiated, no echo)");
+                            }
                         }
                     }
                 }
             }
 
             tracing::info!("FSM task shut down");
-        })
+        }))
+    } else {
+        tracing::info!("Running as Client: Local FSM disabled, delegating transport decisions to Server.");
+        None
     };
 
     // ── Spawn IPC server task ──
@@ -348,6 +500,9 @@ async fn main() -> Result<()> {
         let state = state.clone();
         let config = config.clone();
         let shutdown = shutdown.clone();
+        let wifi_transport = wifi_transport.clone();
+        let bt_transport = bt_transport.clone();
+        let role_ipc = role.clone();
 
         tokio::spawn(async move {
             let listener = match ipc::create_ipc_server(&config.ipc_socket_path).await {
@@ -366,6 +521,9 @@ async fn main() -> Result<()> {
                             Ok((mut stream, _)) => {
                                 let state = state.clone();
                                 let tx_queue = tx_queue.clone();
+                                let wifi_transport = wifi_transport.clone();
+                                let bt_transport = bt_transport.clone();
+                                let role_ipc = role_ipc.clone();
                                 tokio::spawn(async move {
                                     loop {
                                         let request: IpcRequest = match ipc::ipc_read(&mut stream).await {
@@ -379,17 +537,61 @@ async fn main() -> Result<()> {
                                                 IpcResponse::Status(snap)
                                             }
                                             IpcRequest::ForceTransport(t) => {
-                                                state.set_active(t).await;
-                                                state.transition(
-                                                    match t {
-                                                        WbTransport::Bluetooth => WbState::BtOnly,
-                                                        WbTransport::Wifi => WbState::WifiOnly,
-                                                        WbTransport::None => WbState::Discovering,
-                                                    },
-                                                    &format!("Manual override: forced {t}"),
-                                                ).await;
-                                                IpcResponse::Ack {
-                                                    message: format!("Forced transport to {t}"),
+                                                if role_ipc == "server" {
+                                                    state.set_active(t).await;
+                                                    state.transition(
+                                                        match t {
+                                                            WbTransport::Bluetooth => WbState::BtOnly,
+                                                            WbTransport::Wifi => WbState::WifiOnly,
+                                                            WbTransport::None => WbState::Discovering,
+                                                        },
+                                                        &format!("Manual override: forced {t}"),
+                                                    ).await;
+
+                                                    // Server dictates the switch directly.
+                                                    let handover_msg = HandoverMsg::SwitchPrepare {
+                                                        generation: state.generation().await,
+                                                        new_transport: t,
+                                                    };
+                                                    let handover_payload = handover_msg.encode();
+                                                    let header = whyblue_core::protocol::WbHeader::new(
+                                                        state.session_id().await,
+                                                        0,
+                                                        TrafficClass::Control,
+                                                        WbTransport::None,
+                                                        handover_payload.len() as u16,
+                                                        whyblue_core::protocol::FLAG_CONTROL | whyblue_core::protocol::FLAG_HANDOVER,
+                                                    );
+                                                    let frame = whyblue_core::protocol::encode_frame(&header, &handover_payload);
+                                                    if wifi_transport.is_alive() { let _ = wifi_transport.send(&frame).await; }
+                                                    if bt_transport.is_alive() { let _ = bt_transport.send(&frame).await; }
+
+                                                    IpcResponse::Ack {
+                                                        message: format!("Server successfully forced transport to {t}"),
+                                                    }
+                                                } else {
+                                                    // Client MUST proxy request to Server. No local mutation occurs.
+                                                    tracing::info!("Client IPC asking Server to force transport...");
+                                                    let handover_msg = HandoverMsg::SwitchRequest {
+                                                        generation: state.generation().await,
+                                                        new_transport: t,
+                                                    };
+                                                    let handover_payload = handover_msg.encode();
+                                                    let header = whyblue_core::protocol::WbHeader::new(
+                                                        state.session_id().await,
+                                                        0,
+                                                        TrafficClass::Control,
+                                                        WbTransport::None,
+                                                        handover_payload.len() as u16,
+                                                        whyblue_core::protocol::FLAG_CONTROL | whyblue_core::protocol::FLAG_HANDOVER,
+                                                    );
+                                                    let frame = whyblue_core::protocol::encode_frame(&header, &handover_payload);
+                                                    if wifi_transport.is_alive() { let _ = wifi_transport.send(&frame).await; }
+                                                    if bt_transport.is_alive() { let _ = bt_transport.send(&frame).await; }
+
+                                                    IpcResponse::Ack {
+                                                        message: format!("Client requested Server to evaluate forcing transport to {t}..."),
+                                                    }
                                                 }
                                             }
                                             IpcRequest::AutoMode => {

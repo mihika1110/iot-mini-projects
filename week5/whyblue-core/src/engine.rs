@@ -191,6 +191,24 @@ impl SessionEngine {
         }
     }
 
+    /// Build a handover control frame to send to the peer.
+    pub async fn build_handover_frame(&self, msg: &crate::types::HandoverMsg) -> Vec<u8> {
+        let payload = msg.encode();
+        let seq = self.seq_counter.fetch_add(1, Ordering::SeqCst);
+        let session_id = self.state.session_id().await;
+
+        let header = WbHeader::new(
+            session_id,
+            seq,
+            TrafficClass::Control,
+            WbTransport::None,
+            payload.len() as u16,
+            FLAG_CONTROL | crate::protocol::FLAG_HANDOVER,
+        );
+
+        protocol::encode_frame(&header, &payload)
+    }
+
     /// Get the current sequence number.
     pub fn current_seq(&self) -> u32 {
         self.seq_counter.load(Ordering::SeqCst)

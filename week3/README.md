@@ -1,13 +1,12 @@
-# IoT Multi-Node Object Localization System
-[AI Generated Markdown based on the Code, take it with a grain of salt]
+# Week 3 — Multi-Node Object Localization System with PIR + Ultrasonic Sensor Fusion over MQTT
 
-> **Week 3 Mini-Project** — Passive-Infrared + Ultrasonic Sensor Fusion over MQTT with a Rust Terminal Dashboard
+> 4× ESP32 Sensor Nodes → PIR Debounce + Ultrasonic Ranging → MQTT → Rust Subscriber → Weighted Sensor Fusion → Ratatui Terminal Dashboard
 
 ---
 
 ## Overview
 
-This project builds a real-time object localization system using **4 ESP32 sensor nodes**, each equipped with a PIR (Passive-Infrared) and an HC-SR04 ultrasonic sensor. The nodes are physically arranged in a known geometry inside a room. A **central Rust subscriber** collects MQTT readings from all nodes, applies a statistical sensor-fusion model, and displays an estimated object position on a live terminal dashboard powered by **Ratatui**.
+This project builds a real-time indoor object localization system using four ESP32 sensor nodes, each equipped with an HC-SR04 ultrasonic distance sensor and an HC-SR501 passive infrared (PIR) motion detector. The nodes are positioned at known fixed coordinates within a room and publish sensor readings over MQTT at 200 ms intervals. A Rust-based subscriber application collects data from all nodes, applies a weighted statistical sensor fusion model to estimate the object's 2D position, and renders a live terminal dashboard using Ratatui showing per-node status, time-series charts, a spatial position map, and system logs.
 
 ---
 
@@ -33,174 +32,173 @@ This project builds a real-time object localization system using **4 ESP32 senso
                    │   192.168.50.100     │
                    └──────────┬──────────┘
                               │
-                   ┌──────────┴──────────┐
-                   │  mqtt_subscriber     │
-                   │  (Rust / Tokio)      │
-                   │                     │
-                   │  ┌───────────────┐  │
-                   │  │  AgentStore   │  │
-                   │  │  (per-node)   │  │
-                   │  └───────┬───────┘  │
-                   │          │          │
-                   │  ┌───────▼───────┐  │
-                   │  │ Sensor Fusion │  │
-                   │  │ (statistical  │  │
-                   │  │  model)       │  │
-                   │  └───────┬───────┘  │
-                   │          │          │
-                   │  ┌───────▼───────┐  │
-                   │  │ Ratatui TUI   │  │
-                   │  │  Dashboard    │  │
-                   │  └───────────────┘  │
-                   └─────────────────────┘
+               ┌──────────────▼──────────────┐
+               │  Rust Subscriber (Tokio)     │
+               │                              │
+               │  ┌────────────────────────┐  │
+               │  │  AgentStore            │  │
+               │  │  (Arc<Mutex<...>>)     │  │
+               │  └────────┬───────────────┘  │
+               │           │                  │
+               │  ┌────────▼───────────────┐  │
+               │  │  Sensor Fusion         │  │
+               │  │  (weighted barycentric │  │
+               │  │   estimation)          │  │
+               │  └────────┬───────────────┘  │
+               │           │                  │
+               │  ┌────────▼───────────────┐  │
+               │  │  Ratatui TUI Dashboard │  │
+               │  └────────────────────────┘  │
+               └──────────────────────────────┘
 ```
 
 ---
 
-## Components
+## Hardware Components
 
-### 1. ESP32 Firmware — `esp_mqtt.ino`
+| Component | Model / Spec | Quantity | Pin Assignment |
+|---|---|---|---|
+| MCU | ESP32 DevKit | 4 | — |
+| Ultrasonic Sensor | HC-SR04 | 4 | TRIG: GPIO 13, ECHO: GPIO 12 |
+| PIR Sensor | HC-SR501 | 4 | Signal: GPIO 14 |
+| LED (Status) | Built-in | 4 | GPIO 2 |
 
-Each node runs an identical firmware sketch with a 3-state machine:
+---
+
+## ESP32 Node Firmware
+
+**`node_firmware.ino`** — Identical firmware flashed to all 4 nodes, differentiated by `CLIENT_ID` and MQTT topics.
+
+### State Machine
 
 ```
-STATE_CONNECTING_WIFI → STATE_CONNECTING_MQTT → STATE_RUNNING
-                             ↑_________________________________|
-                             (on WiFi loss or MQTT drop)
+STATE_CONNECTING_WIFI ──▶ STATE_CONNECTING_MQTT ──▶ STATE_RUNNING
+         ▲                         ▲                      │
+         └─────────────────────────┴──────────────────────┘
+                    (on WiFi loss or MQTT disconnect)
 ```
 
-**Sensors:**
+### Sensor Fusion Logic (Per-Node)
 
-| Sensor | Pin | Purpose |
+1. **PIR Debounce** — Requires `PIR_DEBOUNCE_COUNT` (default: 2) consecutive HIGH digital reads before confirming motion. A single LOW immediately resets the counter.
+2. **Motion Hold Window** — Once motion is confirmed, the ultrasonic sensor is activated for `MOTION_HOLD_MS` (default: 5000 ms). This prevents spurious distance readings when no object is present.
+3. **Ultrasonic Ranging** — HC-SR04 is triggered at `SONIC_DELAY` intervals (400 ms). Uses `pulseIn()` with 30 ms timeout, converting echo duration to distance in cm: `d = duration × 0.0172`.
+4. **Window Expiry** — When the motion window closes, distance is cleared to `0.0` to signal inactivity.
+
+### MQTT Communication
+
+| Direction | Topic Pattern | Payload |
 |---|---|---|
-| HC-SR04 TRIG | GPIO 13 | Trigger ultrasonic pulse |
-| HC-SR04 ECHO | GPIO 12 | Receive echo pulse |
-| PIR | GPIO 14 | Detect passive infrared motion |
-| LED | GPIO 2 | Status indicator |
+| Publish | `<node-id>/send` | `{"timestamp": <millis>, "distance": <cm>, "movement": <0\|1>}` |
+| Subscribe | `<node-id>/receive` | Control commands (extensible) |
 
-**Sensor Fusion Logic (per-node):**
+**Publish interval**: 200 ms
 
-- The **PIR** is continuously sampled; **2 consecutive HIGH** reads are required to confirm motion (debouncing).
-- Ultrasonic ranging is **only activated for 5 seconds** after motion is confirmed, saving power and avoiding spurious readings.
-- Once motion hold-window expires, the distance reading is cleared to `0.0`.
-
-**MQTT Payload (published every 200ms):**
-
-```json
-{
-  "timestamp": 12345,
-  "distance": 34.2,
-  "movement": 1
-}
-```
-
-**MQTT Topics:**
-
-| Direction | Topic Pattern |
-|---|---|
-| Publish (sensor data) | `<node-id>/send` |
-| Subscribe (commands) | `<node-id>/receive` |
-
-**LED Status Codes:**
+### LED Status Patterns
 
 | Pattern | Meaning |
 |---|---|
-| Slow blink (300ms) | Searching for WiFi |
-| Fast blink (100ms) | Connecting to MQTT |
+| Slow blink (300 ms) | Searching for WiFi |
+| Fast blink (100 ms) | Connecting to MQTT broker |
 | Solid ON | Fully operational |
-| Short pulse (30ms) | Data published to broker |
+| Short pulse (30 ms) | Data published to broker |
+
+### Disconnect Recovery
+
+The firmware implements automatic reconnection:
+- WiFi loss → Transitions to `STATE_CONNECTING_WIFI`, LED slow blink, calls `WiFi.reconnect()`
+- MQTT loss (WiFi OK) → Transitions to `STATE_CONNECTING_MQTT`, LED fast blink, retries every 3 seconds
 
 ---
 
-### 2. MQTT Broker — Mosquitto
+## MQTT Broker
 
-A Mosquitto broker running on a local machine at `192.168.50.100:1883`. The included `mosquitto.conf` handles configuration. Start it with:
+A Mosquitto broker running on a local machine at `192.168.50.100:1883`.
 
 ```bash
 ./run.sh
+# or: mosquitto -c mosquitto.conf
 ```
 
 ---
 
-### 3. Rust Subscriber — `mqtt_subscriber/`
+## Rust Subscriber — `avant_garde`
 
-The subscriber is a multi-threaded async Rust application.
+The subscriber is a multi-threaded async Rust application built with Tokio.
 
-**Structure:**
+### Module Structure
+
+| Module | File | Responsibility |
+|---|---|---|
+| **main** | `main.rs` | Entry point: spawns MQTT and UI tasks, manages shared `AgentStore` |
+| **agent** | `agent.rs` | `AgentStore`, `AgentRecord`, `AgentInfo`, `Coordinate` types; per-node state with sample queue |
+| **sensor** | `sensor.rs` | `SensorData` struct (deserialized from MQTT JSON: `timestamp`, `distance`, `movement`) |
+| **comm** | `comm.rs` | Async MQTT event loop (rumqttc): subscribes to `+/send`, routes payloads to `AgentStore` |
+| **localizer** | `localizer.rs` | Statistical position estimation: weighted barycentric sensor fusion model |
+| **logger** | `logger.rs` | Thread-safe singleton ring-buffer logger (last 100 entries) |
+| **ui** | `ui.rs` | Ratatui TUI: agent list, time-series charts, position canvas, log panel |
+
+### Concurrency Model
 
 ```
-src/
-├── main.rs      — Entry point, sets up Arc<Mutex<AgentStore>> and spawns tasks
-├── agent.rs     — AgentStore, AgentRecord, AgentInfo, Coordinate types
-├── sensor.rs    — SensorData struct (deserialized from MQTT JSON)
-├── comm.rs      — Async MQTT event loop, updates AgentStore
-├── logger.rs    — Thread-safe singleton logger (ring buffer, last 100 entries)
-└── ui.rs        — Ratatui TUI: agent list, charts, position map, log panel
+      main thread              tokio background task
+     ─────────────             ──────────────────────
+     Ratatui UI loop   ←── Arc<Mutex<AgentStore>> ←── comm.rs MQTT loop
 ```
 
-**Concurrency model:**
+The `AgentStore` is protected by `Arc<Mutex<...>>` and shared between the MQTT receiver task (writes) and the Ratatui render loop (reads).
 
-```
-       main thread          tokio background task
-      ─────────────         ──────────────────────
-      Ratatui UI loop   ←── Arc<Mutex<AgentStore>> ←── comm.rs MQTT loop
-```
+### Agent Lifecycle
+
+- **ACTIVE** — Data received within the last `AGENT_EXPIRATION_TIME` (5000 ms)
+- **EXPIRED** — No data received beyond the expiration threshold
+- Each agent maintains a circular queue of up to `MAX_QUEUE_LENGTH` (128) sensor samples
 
 ---
 
 ## Statistical Position Estimation Model
 
-> **This is the core scientific contribution of the project.**
-
 ### Node Geometry
 
-The 4 nodes are placed at known fixed coordinates in the room. Example configuration (1 unit = 1 meter):
+Nodes are placed at known fixed coordinates (configurable per deployment):
 
-```
-Node  │ ID    │ X    │ Y
-──────┼───────┼──────┼─────
-1     │ s-001 │  0.0 │  0.0
-2     │ s-002 │ 10.0 │  0.0
-3     │ s-003 │  0.0 │  6.0
-4     │ s-004 │ 10.0 │  6.0
-```
+| Node | ID | X (m) | Y (m) |
+|---|---|---|---|
+| 1 | s-001 | 0.0 | 0.0 |
+| 2 | s-002 | 10.0 | 0.0 |
+| 3 | s-003 | 0.0 | 6.0 |
+| 4 | s-004 | 10.0 | 6.0 |
 
-### Data Used Per Node
+### Algorithm
 
-- **`distance`** (cm): Direct range measurement from ultrasonic sensor.
-- **`movement`** (0/1): Binary motion confirmation from PIR (post-debounce).
+**Step 1 — Active Node Filtering**
+Only nodes with `movement == 1` are considered; their ultrasonic readings are valid.
 
-### Estimation Approach
+**Step 2 — Circular Intersection**
+Each active node `nᵢ` at position `(xᵢ, yᵢ)` defines a circle of radius `dᵢ` (measured distance). The object lies at or near the intersection of these circles.
 
-Each node provides a noisy distance reading `dᵢ` to the object and a binary motion flag `mᵢ`. 
-
-**Step 1 — Filter active nodes:**  
-Only nodes with `movement == 1` contribute to position estimation, as their ultrasonic readings are valid.
-
-**Step 2 — Circular intersection (range-based):**  
-Each active node `nᵢ` at position `(xᵢ, yᵢ)` defines a circle of radius `dᵢ`. The object lies at the intersection of these circles.
-
-**Step 3 — Weighted least-squares:**  
-Since readings are noisy, a weighted barycentric estimate is used:
-
+**Step 3 — Weighted Barycentric Estimation**
 ```
             Σ (wᵢ · pᵢ)
 P_est  =  ──────────────
                Σ wᵢ
 
 where:
-  pᵢ  = (xᵢ, yᵢ) + dᵢ * unit_vector_toward_center
+  pᵢ  = (xᵢ, yᵢ) + dᵢ · unit_vector_toward_center
   wᵢ  = 1 / (dᵢ² + ε)   (inverse-distance weighting)
 ```
 
-**Step 4 — Confidence score:**  
-The confidence is the fraction of active nodes over total nodes. A position is only displayed when confidence ≥ 0.5 (at least 2 of 4 nodes detect motion).
+**Step 4 — Confidence Scoring**
+Confidence = (active nodes / total nodes). Position is displayed only when confidence ≥ 0.5 (at least 2 of 4 nodes detect motion).
 
-### Future Improvements
+### Graceful Degradation
 
-- Kalman filter for temporal smoothing of position over multiple samples.
-- Angle-of-arrival estimation using multiple echo timings.
-- Machine learning model trained on ground-truth positions.
+| Active Nodes | Output |
+|---|---|
+| 0 | No estimate |
+| 1 | Circle (radius = measured distance from single node) |
+| 2 | Arc (intersection locus of two circles) |
+| 3+ | Point estimate (weighted intersection) |
 
 ---
 
@@ -240,22 +238,19 @@ The confidence is the fraction of active nodes over total nodes. A position is o
 ### Prerequisites
 
 - **Arduino IDE** with ESP32 board support
-- **Rust** (>=1.79) with `cargo`
-- **Mosquitto** MQTT broker installed
+- **Rust** (≥1.79) with `cargo`
+- **Mosquitto** MQTT broker
 
 ### 1. Flash Firmware
 
-1. Open `esp_mqtt.ino` in Arduino IDE.
+1. Open `node_firmware.ino` in Arduino IDE.
 2. Set `CLIENT_ID`, `WIFI_SSID`, `WIFI_PASSWORD`, `MQTT_BROKER_ADDRESS` for each node.
 3. Flash to each ESP32 board.
-
-```bash
-./reflash.sh  # optional helper script
-```
 
 ### 2. Start MQTT Broker
 
 ```bash
+cd src/node_firmware
 ./run.sh
 # or: mosquitto -c mosquitto.conf
 ```
@@ -263,7 +258,7 @@ The confidence is the fraction of active nodes over total nodes. A position is o
 ### 3. Run Dashboard
 
 ```bash
-cd mqtt_subscriber
+cd src/avant_garde
 cargo run
 ```
 
@@ -273,12 +268,12 @@ cargo run
 
 | Parameter | Default | Description |
 |---|---|---|
-| `SONIC_DELAY` | 400 ms | Min time between ultrasonic readings |
+| `SONIC_DELAY` | 400 ms | Min interval between ultrasonic readings |
 | `PUBLISH_INTERVAL` | 200 ms | MQTT publish rate |
 | `RECONNECT_DELAY` | 3000 ms | Time between reconnect attempts |
-| `MOTION_HOLD_MS` | 5000 ms | Ultrasonic active window after PIR |
+| `MOTION_HOLD_MS` | 5000 ms | Ultrasonic active window after PIR motion |
 | `PIR_DEBOUNCE_COUNT` | 2 | Consecutive HIGH reads for confirmed motion |
-| `AGENT_EXPIRATION_TIME` | 5000 ms | Agent marked EXPIRED if no data received |
+| `AGENT_EXPIRATION_TIME` | 5000 ms | Agent marked EXPIRED if no data |
 | `MAX_QUEUE_LENGTH` | 128 | Max sensor samples stored per agent |
 
 ---
@@ -286,20 +281,27 @@ cargo run
 ## File Structure
 
 ```
-esp_mqtt/
-├── esp_mqtt.ino           — Arduino firmware for each sensor node
-├── mosquitto.conf         — MQTT broker configuration
-├── run.sh                 — Broker start script
-├── reflash.sh             — Firmware flash helper
-└── mqtt_subscriber/       — Rust MQTT subscriber + dashboard
-    ├── Cargo.toml
-    └── src/
-        ├── main.rs
-        ├── agent.rs
-        ├── sensor.rs
-        ├── comm.rs
-        ├── logger.rs
-        └── ui.rs
+week3/
+├── README.md                       # This document
+├── screenshot.png                  # Dashboard screenshot
+├── docs/
+│   └── HC SR501 PIR Sensor Datasheet.pdf
+└── src/
+    ├── node_firmware/              # ESP32 firmware
+    │   ├── node_firmware.ino       # Arduino sketch (state machine + sensors)
+    │   ├── mosquitto.conf          # MQTT broker configuration
+    │   ├── run.sh                  # Broker start script
+    │   └── reflash.sh              # Firmware flash helper
+    └── avant_garde/                # Rust MQTT subscriber + dashboard
+        ├── Cargo.toml
+        └── src/
+            ├── main.rs             # Entry point, Arc<Mutex<AgentStore>>
+            ├── agent.rs            # Per-node state, sample queue
+            ├── sensor.rs           # SensorData deserialization
+            ├── comm.rs             # Async MQTT event loop
+            ├── localizer.rs        # Weighted sensor fusion model
+            ├── logger.rs           # Ring-buffer system logger
+            └── ui.rs               # Ratatui TUI rendering
 ```
 
 ---
@@ -312,8 +314,25 @@ esp_mqtt/
 - `ArduinoJson.h` — JSON serialization
 
 ### Subscriber (Rust)
-- `rumqttc` — Async MQTT client
-- `tokio` — Async runtime
-- `serde` / `serde_json` — JSON deserialization
-- `ratatui` — Terminal UI
-- `crossterm` — Terminal backend
+- `rumqttc 0.24` — Async MQTT client
+- `tokio 1` — Async runtime (full features)
+- `serde 1.0` / `serde_json 1.0` — JSON deserialization
+- `ratatui 0.30` — Terminal UI framework
+- `crossterm 0.28` — Terminal backend
+
+---
+
+## Technical Specifications
+
+| Metric | Value |
+|---|---|
+| Number of Nodes | 4 |
+| MQTT Publish Rate | 200 ms (5 Hz) |
+| Ultrasonic Sample Rate | 400 ms (2.5 Hz) |
+| PIR Debounce | 2 consecutive HIGH |
+| Motion Hold Window | 5 seconds |
+| Agent Expiry Timeout | 5 seconds |
+| Max Samples per Agent | 128 |
+| Position Confidence Threshold | ≥ 0.5 (2/4 nodes) |
+| MQTT QoS | 0 (fire-and-forget) |
+| Localization Dimensions | 2D (X, Y) |

@@ -30,6 +30,8 @@ struct StateInner {
     total_tx_bytes: u64,
     total_rx_bytes: u64,
     handover_count: u32,
+    /// True when the last transport change was initiated by the peer (prevents echo)
+    peer_initiated_switch: bool,
     chat_log: Vec<(String, String)>,
     transition_log: Vec<TransitionEvent>,
 }
@@ -63,6 +65,7 @@ impl StateManager {
                 total_tx_bytes: 0,
                 total_rx_bytes: 0,
                 handover_count: 0,
+                peer_initiated_switch: false,
                 chat_log: Vec::new(),
                 transition_log: Vec::new(),
             })),
@@ -149,6 +152,17 @@ impl StateManager {
     pub async fn set_peer_present(&self, present: bool) {
         let mut inner = self.inner.write().await;
         inner.peer_present = present;
+    }
+
+    /// Mark that the last transport switch was initiated by the peer.
+    pub async fn set_peer_initiated_switch(&self, val: bool) {
+        let mut inner = self.inner.write().await;
+        inner.peer_initiated_switch = val;
+    }
+
+    /// Check if the last transport switch was peer-initiated.
+    pub async fn is_peer_initiated_switch(&self) -> bool {
+        self.inner.read().await.peer_initiated_switch
     }
 
     /// Add to TX byte counter.
