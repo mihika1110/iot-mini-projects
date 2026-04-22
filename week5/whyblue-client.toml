@@ -1,0 +1,68 @@
+# WhyBlue Configuration
+# =====================
+# Copy this file to whyblue.toml and edit for your setup.
+
+[network]
+# Wi-Fi peer address (the other Pi's wlan0 IP)
+wifi_peer_addr = "10.42.0.1"
+wifi_port = 9876
+
+# Bluetooth peer MAC address (from bluetoothctl)
+bt_peer_addr = "DC:A6:32:4A:B0:11"
+bt_port = 9877
+
+# Wi-Fi interface name
+wifi_iface = "wlan0"
+
+# Role: "server" (Pi acting as BT PAN NAP) or "client" (PANU)
+role = "client"
+
+# IPC socket path for TUI communication
+ipc_socket_path = "/tmp/whyblue.sock"
+
+[proximity]
+# BT RSSI above this → candidate for NEAR (dBm)
+bt_rssi_near_threshold = -65
+
+# BT RSSI below this → candidate for FAR (dBm)
+bt_rssi_far_threshold = -78
+
+# Wi-Fi RSSI below this → FAR_WIFI_WEAK (dBm)
+wifi_rssi_weak_threshold = -75
+
+# Number of consecutive samples needed to change band
+hysteresis_samples = 5
+
+# Duration (ms) RSSI must sustain to trigger band change
+hysteresis_duration_ms = 3000
+
+[switching]
+# Minimum ms between transport switches
+switch_cooldown_ms = 5000
+
+# Minimum ms to stay on a transport after switching
+dwell_time_ms = 3000
+
+# Overlap duration during make-before-break handover
+handover_overlap_ms = 2000
+
+# Interval between metric probes (ms)
+probe_interval_ms = 500
+
+# How long a transport must be bad before triggering handover
+bad_duration_ms = 2000
+
+# How long a transport must be good to qualify as alternative
+good_duration_ms = 1000
+
+[scoring]
+# Weights for composite link scoring (must sum to ~1.0)
+w_latency = 0.30
+w_loss = 0.25
+w_stability = 0.25
+w_energy = 0.10
+w_proximity = 0.10
+
+# Score thresholds
+bt_bad_threshold = 0.35
+good_threshold = 0.60
